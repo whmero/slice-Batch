@@ -14,26 +14,15 @@ import requests
 
 # Configure logging to display INFO level messages and above
 logging.basicConfig(level=logging.INFO, format='%(asctime)s %(message)s')
-
-def handle_response(data, client_exec_time, server_exec_time, total_inference_time, client_c, batch_type):
-    try:
-        
-        logging.info("Received result of processing request no. "+ str(data['req_id']) + " in batching time = "+ str(data['time_batch'])+ " seconds from server with model: " + data['model_name']+ " and total processing time =  " + str(total_inference_time))
-        write_to_csv("results/" + client_c + '.csv', metrics_headers, [data['client_id'], data['req_id'], data['model_name'], batch_type, data['batch'], str(data['slice']), data['time_batch'], str(client_exec_time), str(server_exec_time), str(total_inference_time)])
-
-    except Exception as e:
-        logging.error(f"Error decoding or unpickling the response: {str(e)}")
     
 # Directory containing images
-imgs_dir = "../../Images/"
-imgs_path = os.listdir(imgs_dir)
 client_c = sys.argv[1]
+model_name = str(sys.argv[2])
+slice = int(sys.argv[3])
 sending_start_time = None
 receiving_end_time = None
 total_inference_time = None
-model_name = 'vit'
 batch_type = 'slice'
-slice = 4
 if model_name == 'swin':
     model= Split_2_Swin(swin, slice)
     # Get the 4 separate parts of the model
@@ -63,7 +52,7 @@ async def send_request(req_id, http_client, img, client_c, model_name, slice):
         # Preprocess the image (resize, permute, and add batch dimension if needed)
         img = cv2.resize(img, (224, 224))
         img = torch.tensor(img, dtype=torch.float32).permute(2, 0, 1)  # Convert to (3, 224, 224)
-        if slice != 1:
+        if slice != 0:
             img = img.unsqueeze(0)  # Add batch dimension: (1, 3, 224, 224)
             with torch.no_grad():
                 img = s1(img)
