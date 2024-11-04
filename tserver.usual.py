@@ -30,7 +30,7 @@ def get_slice(model_name, slc):
     lst = []
     new_name = model_name+str(slc)
     if new_name in slices.keys():
-            return slices[new_name][slc - 1]
+            return slices[new_name][-1]
     if 'swin' in model_name:
         if model_name == "swin_large":
             lst = Split_2_Swin(swin_large, slc).get_parts()
@@ -44,7 +44,7 @@ def get_slice(model_name, slc):
         else:
             lst = Split_2_Vit(deit, slc).get_parts()
     slices[new_name] = lst
-    return lst[1]
+    return lst[-1]
 
 async def process_request():
     try:
@@ -70,7 +70,7 @@ def process_batch(batch, slice_idx):
     imgs = [req[4].unsqueeze(0) if req[4].dim() == 2 else req[4] for req in batch]
     
     imgs = torch.stack(imgs)
-    if slice_idx != 1: 
+    if slice_idx != 0: 
         imgs = imgs.squeeze(1) 
     print(imgs.shape)
     # Process the batch through the model slice
