@@ -16,15 +16,13 @@ import requests
 logging.basicConfig(level=logging.INFO, format='%(asctime)s %(message)s')
     
 # Directory containing images
-imgs_dir = "../../Images/"
-imgs_path = os.listdir(imgs_dir)
 client_c = sys.argv[1]
+model_name = str(sys.argv[2])
+slice = int(sys.argv[3])
 sending_start_time = None
 receiving_end_time = None
 total_inference_time = None
-model_name = 'swin'
 batch_type = 'slice'
-slice = 4
 if model_name == 'swin':
     model= Split_2_Swin(swin, slice)
     # Get the 4 separate parts of the model
@@ -54,7 +52,7 @@ async def send_request(req_id, http_client, img, client_c, model_name, slice):
         # Preprocess the image (resize, permute, and add batch dimension if needed)
         img = cv2.resize(img, (224, 224))
         img = torch.tensor(img, dtype=torch.float32).permute(2, 0, 1)  # Convert to (3, 224, 224)
-        if slice != 1:
+        if slice != 0:
             img = img.unsqueeze(0)  # Add batch dimension: (1, 3, 224, 224)
             with torch.no_grad():
                 img = s1(img)
@@ -94,7 +92,7 @@ async def main():
     http_client = httpclient.AsyncHTTPClient()
 
     # Sending multiple requests concurrently
-    for req_id in range(int(len(imgs_path) / 4)):
+    for req_id in range(int(len(imgs_path) / 2)):
         img = cv2.imread(imgs_dir + imgs_path[req_id])
 
         # Call the request function asynchronously
