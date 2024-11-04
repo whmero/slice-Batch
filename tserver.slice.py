@@ -29,7 +29,7 @@ def get_slice(model_name, slc):
     global slices
     lst = []
     if model_name in slices.keys():
-            return slices[model_name][slc - 1]
+            return slices[model_name][slc]
     if 'swin' in model_name:
         if model_name == "swin_large":
             lst = SplitSwin(swin_large, split_idx1, split_idx2, split_idx3).get_parts()
@@ -43,7 +43,7 @@ def get_slice(model_name, slc):
         else:
             lst = SplitViT(deit, split_idx1, split_idx2, split_idx3).get_parts()
     slices[model_name] = lst
-    return lst[slc - 1]
+    return lst[slc]
 
 async def process_request():
     try:
@@ -69,7 +69,7 @@ def process_batch(batch, slice_idx):
     imgs = [req[4].unsqueeze(0) if req[4].dim() == 2 else req[4] for req in batch]
     
     imgs = torch.stack(imgs)
-    if slice_idx != 1: 
+    if slice_idx != 0: 
         imgs = imgs.squeeze(1) 
     print(imgs.shape)
     # Process the batch through the model slice
@@ -123,11 +123,11 @@ class MainHandler(tornado.web.RequestHandler):
             req_queue.put((client_id, req_id, model_name, slice_req, img, reply_future))
 
             # Process each slice up to the 4th one
-            while slice_req <= 4:
+            while slice_req <= 3:
                 result = await reply_future
                 slc = int(result.get('slice'))
                 # If not the final slice (slice 4), prepare for the next slice
-                if slc < 4:
+                if slc < 3:
                     reply_future = Future()
                     req_queue.put((result.get('client_id'), result.get('req_id'), result.get('model_name'), slc + 1, result.get('result'), reply_future))
                     slice_req = slc + 1
