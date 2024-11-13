@@ -8,70 +8,98 @@ from tornado.concurrent import Future
 import numpy as np
 import datetime
 import torch
-import cv2
-from collections import defaultdict
 import logging
-import pprint
-import os
-#os.environ['CUDA_VISIBLE_DEVICES'] = '-1'
+from collections import defaultdict
+
 # Configure logging to display INFO level messages and above
 logging.basicConfig(level=logging.INFO, format='%(asctime)s %(message)s')
 
-slices = {}
-# Create a dictionary to hold requests based on client_id
+# Initialize global variables
 client_requests = defaultdict(list)
-
-# Queues for each slice
-req_queue = Queue()
+slices = {'vit_s0':[],'vit_s1':[], 'vit_s2':[],'vit_s3':[],'vit_large_s0':[],'vit_large_s1':[], 'vit_large_s2':[], 'vit_large_s3':[], 
+          'swin_large_s0':[], 'swin_large_s1':[],'swin_large_s2':[],'swin_large_s3':[],'swin_s0':[],'swin_s1':[],'swin_s2':[],'swin_s3':[], 
+          'deit_s0':[],'deit_s1':[],'deit_s2':[],'deit_s3':[]}
+total_slice = 3
+req_queue = defaultdict(Queue)  # Separate queue for each slice
 batch_size = 4
 
-def get_slice(model_name, slc):
+# Function to get a specific slice of a model
+def get_slices(model_name):
     global slices
-    lst = []
-    if model_name in slices.keys():
-            return slices[model_name][slc]
+    # Create and store slices based on the model type
     if 'swin' in model_name:
-        if model_name == "swin_large":
-            lst = SplitSwin(swin_large, split_idx1, split_idx2, split_idx3).get_parts()
+        if "swin_large" in model_name:
+            slices[model_name] = SplitSwin(swin_large, split_idx1, split_idx2, split_idx3).get_parts()
         else:
-            lst = SplitSwin(swin, split_idx1, split_idx2, split_idx3).get_parts()
+            slices[model_name] = SplitSwin(swin, split_idx1, split_idx2, split_idx3).get_parts()
     else:
-        if model_name == "vit_large":
-            lst = SplitViT(vit_large, split_idx1, split_idx2, split_idx3).get_parts()
-        elif model_name == "vit":
-            lst = SplitViT(vit, split_idx1, split_idx2, split_idx3).get_parts()
+        if "vit_large" in model_name:
+            slices[model_name] = SplitViT(vit_large, split_idx1, split_idx2, split_idx3).get_parts()
+        elif "vit" in model_name:
+            slices[model_name] = SplitViT(vit, split_idx1, split_idx2, split_idx3).get_parts()
         else:
-            lst = SplitViT(deit, split_idx1, split_idx2, split_idx3).get_parts()
-    slices[model_name] = lst
-    return lst[slc]
+            slices[model_name] = SplitViT(deit, split_idx1, split_idx2, split_idx3).get_parts()
 
-async def process_request():
+# Prepare models and start serving
+async def prepare_models_and_start_serving():
+    logging.info("Entered prepare_models_and_start_serving...")
     try:
-        async for req in req_queue:
-            _, _, model_name, slice_req, _, _ = req
-            tag = model_name + "_s" + str(slice_req)
-            client_requests[tag].append(req)
-            if len(client_requests[tag]) == batch_size:
-                logging.info(f'Batch execution starts for slice {slice_req}')
-                process_batch(client_requests[tag], slice_req)
-                logging.info(f'Batch execution ends for slice {slice_req}')
-                client_requests[tag].clear()
+        global slices, req_queue
+
+        logging.info(f"Preparing models {slices.keys()}")
+
+        for model_name in slices.keys():
+            get_slices(model_name)
+            logging.info(f"Initialized slices for {model_name}")
+
+        for model_name in slices.keys():
+            for slice_index in range(total_slice):
+                serving_tag = model_name
+                req_queue[serving_tag] = Queue()
+                logging.info(f"Initializing queue for {serving_tag}")
+
+                tornado.ioloop.IOLoop.current().add_callback(process_request, model_name, slice_index)
+                logging.info(f"Registered callback for {serving_tag}")
     except Exception as e:
+        logging.error(f"Error in prepare_models_and_start_serving: {e}")
+
+async def process_request(model_name: str, slice_index: int):
+    serving_tag = model_name
+    logging.info(f"Started processing for {serving_tag}...")
+    try:
+        while True:
+            logging.info(f"Waiting for requests in {serving_tag}...")
+            req = await req_queue[serving_tag].get()
+            logging.info(f"Processing request from {serving_tag}: {req}")
+
+            _, _, model_name, slice_req, _, _ = req
+
+            client_requests[serving_tag].append(req)
+            if len(client_requests[serving_tag]) == batch_size:
+                logging.info(f'Batch execution starts for slice {slice_req}')
+                process_batch(client_requests[serving_tag], serving_tag)
+                logging.info(f'Batch execution ends for slice {slice_req}')
+                client_requests[serving_tag].clear()
+    except Exception as e:
+        client_requests[serving_tag].clear()
         logging.error(f"Error in process_request: {str(e)}")
 
 
-def process_batch(batch, slice_idx):
-    logging.info(f'Processing {len(batch)} inputs at slice {slice_idx}')
+# Process a batch of requests
+def process_batch(batch, serving_tag):
+    global slices
+    slc = int(serving_tag[-1])
+    logging.info(f'Processing {len(batch)} inputs at slice {slc}')
     model_name = batch[0][2]
-    model_slice = get_slice(model_name, slice_idx)
 
-    # Load the images for this batch
+    model_slice = slices[serving_tag][slc]
+
+    # Prepare batch of images
     imgs = [req[4].unsqueeze(0) if req[4].dim() == 2 else req[4] for req in batch]
-    
     imgs = torch.stack(imgs)
-    if slice_idx != 0: 
-        imgs = imgs.squeeze(1) 
-    print(imgs.shape)
+    if slc != 0:
+        imgs = imgs.squeeze(1)
+
     # Process the batch through the model slice
     start_time = datetime.datetime.now()
     results = model_slice(imgs)
@@ -81,29 +109,27 @@ def process_batch(batch, slice_idx):
     for i, result in enumerate(results):
         client_id, req_id, model_name, slice_req, _, reply_future = batch[i]
 
-        # Prepare the response data
-        reply_data = {
-            'client_id': client_id,
-            'result': result,  # Assuming result is a tensor
-            'model_name': model_name,
-            'time_batch': time_batch,
-            'batch': batch_size,
-            'req_id': req_id,
-            'slice': slice_idx
-        }
+        if slc < total_slice - 1:  # Not the last slice
+            next_slice_idx = slc + 1
+            next_serving_tag = model_name + "_s" + str(next_slice_idx)
+            logging.info(f"Forwarding result to {next_serving_tag}")
+            req_queue[next_serving_tag].put((client_id, req_id, model_name, next_slice_idx, result, reply_future))
+        else:  # Final slice
+            reply_data = {
+                'client_id': client_id,
+                'result': result,  # Assuming result is a tensor
+                'model_name': model_name,
+                'time_batch': time_batch,
+                'batch': batch_size,
+                'req_id': req_id,
+                'slice': slc
+            }
+            reply_future.set_result(reply_data)
+            req_queue[serving_tag].task_done()
 
-        # If more slices need to be processed
-        """ if slice_idx < 4:
-            next_slice_idx = slice_idx + 1
-            tag = model_name + "_s" + str(next_slice_idx)
-            client_requests[tag].append((client_id, req_id, model_name, slice_req, result, reply_future))
-        else: """
-        reply_future.set_result(reply_data)
-        req_queue.task_done()
+        logging.info(f'Processed input {i} for client {client_id}, request {req_id}, slice {slc}')
 
-        logging.info(f'Done input {i} for client {client_id}, request {req_id}, slice {slice_idx}')
-
-
+# Tornado request handler
 class MainHandler(tornado.web.RequestHandler):
     async def post(self):
         try:
@@ -115,55 +141,57 @@ class MainHandler(tornado.web.RequestHandler):
             req_id = req['request_id']
             model_name = req['model_name']
             slice_req = int(req['slice'])
-            logging.info(f"Received request {req_id} from client: {client_id} for model: {model_name}, slice {slice_req}")
-            
             img = req['image']
-            
+
+            logging.info(f"Received request {req_id} from client: {client_id} for model: {model_name}, slice {slice_req}")
+
             reply_future = Future()
-            req_queue.put((client_id, req_id, model_name, slice_req, img, reply_future))
+            serving_tag = model_name + "_s" + str(slice_req)
 
-            # Process each slice up to the 4th one
-            while slice_req <= 3:
-                result = await reply_future
-                slc = int(result.get('slice'))
-                # If not the final slice (slice 4), prepare for the next slice
-                if slc < 3:
-                    reply_future = Future()
-                    req_queue.put((result.get('client_id'), result.get('req_id'), result.get('model_name'), slc + 1, result.get('result'), reply_future))
-                    slice_req = slc + 1
-                else:
-                    # Final slice (slice 4), prepare the response to send
-                    response = {
-                        'client_id': result.get('client_id'),
-                        'result': result.get('result').tolist(),  # Collect all results
-                        'model_name': result.get('model_name'),
-                        'batch': result.get('batch'),
-                        'time_batch': result.get('time_batch'),
-                        'req_id': result.get('req_id'),
-                        'slice': result.get('slice')
-                    }
-                    
-                    # Send the final accumulated response
-                    self.write(pickle.dumps(response))
-                    logging.info(f"Sent result {response['req_id']} from client: {response['client_id']} for model: {response['model_name']}, slice {response['slice']}")
-                    break  # Exit after sending the response for slice 4
+            # Put the request into the corresponding queue
+            logging.info(f"Adding request to queue {serving_tag}")
+            await req_queue[serving_tag].put((client_id, req_id, model_name, slice_req, img, reply_future))
+            logging.info(f"Request added to {serving_tag}")
 
+            # Await the response for the final slice
+            result = await reply_future
+            logging.info(f"Received result for request {req_id} from {serving_tag}")
+
+            response = {
+                'client_id': result.get('client_id'),
+                'result': result.get('result').tolist(),
+                'model_name': result.get('model_name'),
+                'batch': result.get('batch'),
+                'time_batch': result.get('time_batch'),
+                'req_id': result.get('req_id'),
+                'slice': result.get('slice')
+            }
+
+            # Send the response to the client
+            self.write(pickle.dumps(response))
+            logging.info(f"Sent result {response['req_id']} from client: {response['client_id']} for model: {response['model_name']}, slice {response['slice']}")
         except Exception as e:
             logging.error(f"Error in post handler: {str(e)}")
 
+# Create and start the Tornado application
 def make_app():
-    return tornado.web.Application([
-        (r"/", MainHandler),
-    ])
+    return tornado.web.Application([(r"/", MainHandler)])
 
 async def main():
-    tornado.ioloop.IOLoop.current().add_callback(process_request)
+    logging.info("Starting main...")
+    #prepare_slices(models_names, slices_lst)
+    
+    # Ensure callback is registered
+    logging.info("Registering prepare_models_and_start_serving callback...")
+    tornado.ioloop.IOLoop.current().add_callback(prepare_models_and_start_serving)
+
+    # Start the Tornado app
     app = make_app()
     app.listen(8080)
-    logging.info("server is ready...........................................................")
-    # Block indefinitely without waiting on events that could trigger the shutdown
+    logging.info("Server is ready and listening on port 8080...")
+    
     while True:
-        await asyncio.sleep(3600)  # Sleep for 1 hour in a loop
+        await asyncio.sleep(3600)  # Keep the loop alive
 
 
 if __name__ == "__main__":

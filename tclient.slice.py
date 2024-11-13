@@ -71,6 +71,7 @@ async def send_request(req_id, http_client, img, client_c, model_name, slice):
         serialized_data = pickle.dumps(post_data)
         body = base64.b64encode(serialized_data)
         sending_start_time = datetime.datetime.now()
+        logging.info(f"Sent request {post_data['request_id']} with slice {post_data['slice']} result for client {post_data['client_id']}")
         response = await http_client.fetch("http://localhost:8080", method  ='POST', headers = None, body = body, request_timeout = 300)
         # Measure times
         receiving_end_time = datetime.datetime.now()
@@ -82,7 +83,7 @@ async def send_request(req_id, http_client, img, client_c, model_name, slice):
         logging.info(f"Received slice {response_data['slice']} result for client {response_data['client_id']}")
         if len(response.body)!=0:
             # Handle the response
-            handle_response(response_data, client_exec_time, server_exec_time, total_inference_time, client_c, batch_type)
+            handle_response(response_data, slice, client_exec_time, server_exec_time, total_inference_time, client_c, batch_type)
 
     except httpclient.HTTPError as e:
         logging.error(f"HTTPError occurred: {e}")
@@ -92,7 +93,7 @@ async def main():
     http_client = httpclient.AsyncHTTPClient()
 
     # Sending multiple requests concurrently
-    for req_id in range(int(len(imgs_path) / 4)):
+    for req_id in range(int(len(imgs_path) / 2)):
         img = cv2.imread(imgs_dir + imgs_path[req_id])
 
         # Call the request function asynchronously
