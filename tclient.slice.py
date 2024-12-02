@@ -79,7 +79,7 @@ async def send_request(req_id, http_client, img, client_c, model_name, slice):
         body = base64.b64encode(serialized_data)
         sending_start_time = datetime.datetime.now()
         logging.info(f"Sent request {post_data['request_id']} with slice {post_data['slice']} result for client {post_data['client_id']}")
-        response = await http_client.fetch("http://192.168.84.116:8080", method  ='POST', headers = None, body = body, request_timeout = 300)
+        response = await http_client.fetch("http://localhost:8080", method  ='POST', headers = None, body = body, request_timeout = 300)
         # Measure times
         receiving_end_time = datetime.datetime.now()
         client_exec_time = (sending_start_time - client_start_time).total_seconds()
