@@ -20,7 +20,7 @@ slices =defaultdict(list)
 
 total_slice = 4
 req_queue = defaultdict(Queue)  # Separate queue for each slice
-batch_size = 2
+batch_size = 16
 
 # Function to get a specific slice of a model
 def load_slices(model_name):
@@ -72,7 +72,7 @@ async def process_request(model_name: str, slice_index: int):
             req = await req_queue[serving_tag].get()
             logging.info(f"Processing request from {serving_tag}")
 
-            _, _, model_name, slice_req, _, _ = req
+            _, _, model_name, slice_req, _, _, _ = req
 
             batch.append(req)
             if len(batch) == batch_size:
@@ -91,16 +91,26 @@ def process_batch(batch, model_name, slice_index):
     global slices
 
     slc = slice_index
+    total_flops = [req[5] for req in batch]
     logging.info(f'Processing {len(batch)} inputs for model {model_name} at slice {slc}')
 
     model_slice = slices[model_name][slc]
 
     # Prepare batch of images
-    imgs = [req[4].unsqueeze(0) if req[4].dim() == 2 else req[4] for req in batch]
-    imgs = torch.stack(imgs)
-    if slc != 0:
-        imgs = imgs.squeeze(1)
+    if 'swin' in model_name:
+    # Adjust dimensions if 'swin' is in the model name
+        imgs = [req[4].unsqueeze(0) if req[4].dim() == 3 else req[4] for req in batch]
+        imgs = torch.stack(imgs).squeeze(1) 
+    else:
+        # Load the images for this batch
+        imgs = [req[4].unsqueeze(0) if req[4].dim() == 2 else req[4] for req in batch]
+        imgs = torch.stack(imgs)
+        if slice != 0: 
+            imgs = imgs.squeeze(1) 
 
+    # Calculate FLOPs for this batch
+    flops = FlopCountAnalysis(model_slice, imgs).total()
+    logging.info(f"Slice {slice_index} FLOPs for batch: {flops}")
     # Process the batch through the model slice
     start_time = datetime.datetime.now()
     results = model_slice(imgs)
@@ -108,14 +118,14 @@ def process_batch(batch, model_name, slice_index):
     time_batch = (end_time - start_time).total_seconds()
 
     for i, result in enumerate(results):
-        client_id, req_id, model_name, slice_req, _, reply_future = batch[i]
+        client_id, req_id, model_name, slice_req, _, _, reply_future = batch[i]
         logging.info(f'Processed input {i} for client {client_id}, request {req_id}, slice {slc}')
         
         if slc < total_slice - 1:  # Not the last slice
             next_slice_idx = slc + 1
             next_serving_tag = model_name + "_s" + str(next_slice_idx)
             logging.info(f"Forwarding result to {next_serving_tag}")
-            req_queue[next_serving_tag].put((client_id, req_id, model_name, next_slice_idx, result, reply_future))
+            req_queue[next_serving_tag].put((client_id, req_id, model_name, next_slice_idx, result, flops, reply_future))
         else:  # Final slice
             reply_data = {
                 'client_id': client_id,
@@ -124,7 +134,8 @@ def process_batch(batch, model_name, slice_index):
                 'time_batch': time_batch,
                 'batch': batch_size,
                 'req_id': req_id,
-                'slice': slc
+                'slice': slc,
+                'flops':flops
             }
             reply_future.set_result(reply_data)
             logging.info(f"Returing result to client {client_id}, request {req_id}\n\n")
@@ -147,10 +158,11 @@ class MainHandler(tornado.web.RequestHandler):
 
             reply_future = Future()
             serving_tag = model_name + "_s" + str(slice_req)
+            flops = 0
 
             # Put the request into the corresponding queue
             logging.info(f"Adding request to queue {serving_tag}")
-            req_queue[serving_tag].put((client_id, req_id, model_name, slice_req, img, reply_future))
+            req_queue[serving_tag].put((client_id, req_id, model_name, slice_req, img, flops, reply_future))
             logging.info(f"Request added to {serving_tag}")
 
             # Await the response for the final slice
@@ -164,7 +176,8 @@ class MainHandler(tornado.web.RequestHandler):
                 'batch': result.get('batch'),
                 'time_batch': result.get('time_batch'),
                 'req_id': result.get('req_id'),
-                'slice': result.get('slice')
+                'slice': result.get('slice'),
+                'flops':result.get('flops')
             }
 
             # Send the response to the client
